@@ -1,4 +1,7 @@
 ## How to use
+After installing the `ecdsa` library via pip: `pip install ecdsa`
+
+
 You can simply run Python files in this order:
   - `python3 gateway.py`
   - `python3 subscriber.py`
