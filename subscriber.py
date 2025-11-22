@@ -3,7 +3,7 @@ import subprocess
 import time
 import base64
 from hashlib import sha256
-from ecdsa import SECP256k1, SigningKey
+from ecdsa import SECP256k1, SigningKey, VerifyingKey
 from ecdsa.ellipticcurve import Point, PointJacobi
 
 
@@ -27,9 +27,14 @@ mqtt_broker="192.168.100.100"
 mqtt_port="1883"
 mqtt_topic = "/auth"
 
-HOME_DIR="/home/raspi/mqtt_tasks/ieee_medical_mqtt/protocol/"
+HOME_DIR="/home/raspi/subscriber/"
 CONFIG_DIR = f"{HOME_DIR}config/"
 
+priv_hex = "60a435ba3424b6eb2eab533fd0ddf0acfafd35b2324cd97378849d4d23a6f661"
+SKi = SigningKey.from_string(bytes.fromhex(priv_hex), curve=SECP256k1)
+PKi = SKi.get_verifying_key()
+
+PKg = VerifyingKey.from_string(bytes.fromhex("02467e307a469d0fadde5cd83d15f9b341ec229919fad7bf28bf249496f2b8c085"), curve=SECP256k1)
 
 # send a hello and IDg
 with open(f"{CONFIG_DIR}IDg","r") as f:
@@ -53,20 +58,21 @@ with open(f"{CONFIG_DIR}IDi") as f:
 
 Ni = int.from_bytes(os.urandom(32), byteorder='big')
 
-X1 = str_to_point(m1.split(',')[0])
-X2 = str_to_point(m1.split(',')[1])
-X3 = Ni * X1
-X4 = Ni * X2
+X1 = str_to_point(m1)
+X2 = Ni * PKi.pubkey.point
+X3 = SKi.privkey.secret_multiplier * X1
+X4 = Ni * SKi.privkey.secret_multiplier * PKg.pubkey.point
 hash_x4 = f"{X4.x()}{X4.y()}"
-#b64_x4 = base64.b64encode(X4.to_bytes()).decode('utf-8')
 hash_x4 = base64.b64encode(sha256(hash_x4.encode('utf-8')).digest()).decode('utf-8')
-X5 = xor_strings(hash_x4.encode().hex(),idi.encode().hex())
+X5 = xor_strings(hash_x4.encode().hex(),idi)
 
-#print(m1.split(','))
 str_x3 = base64.b64encode(X3.to_bytes()).decode('utf-8')
-_t = f"{m1.split(',')[0]}{m1.split(',')[1]}{str_x3}{idi}{idg}"
+str_x4 = base64.b64encode(X4.to_bytes()).decode('utf-8')
+_t = f"{str_x3}{str_x4}{X5}{idi}{idg}"
+
 X6 = base64.b64encode(sha256(_t.encode('utf-8')).digest()).decode('utf-8')
-m2 = f"{str_x3},{X5},{X6}"
+X2_toSend = base64.b64encode(X2.to_bytes()).decode('utf-8')
+m2 = f"{X2_toSend},{X5},{X6}"
 print(f"\033[96m[+] Sending M2 : {{{m2}}}\033[0m")
 # send m2
 os.system(f"mosquitto_pub -h {mqtt_broker} -t {mqtt_topic} -p {mqtt_port} -m {m2} > /dev/null")
@@ -81,12 +87,11 @@ except Exception as e:
         print("m3:",e)
         exit()
 
-hash_bitwise_x4 = f"{X4.x()}{X4.y()}"
-hash_bitwise_x4 = ~int(hash_bitwise_x4)
+_x3 = f"{X3.x()}{X3.y()}"
+_x4 = f"{X4.x()}{X4.y()}"
+SKig = base64.b64encode(sha256(f"{_x3}{_x4}".encode('utf-8')).digest()).decode('utf-8')
 
-SKig = base64.b64encode(sha256(str(hash_bitwise_x4).encode('utf-8')).digest()).decode('utf-8')
-
-_hash = f"{SKig}{str_x3}{X5}{X6}"
+_hash = f"{SKig}{X2_toSend}{X5}{X6}"
 calculated_hash_m3 = base64.b64encode(sha256(_hash.encode('utf-8')).digest()).decode('utf-8')
 
 if calculated_hash_m3 == m3:

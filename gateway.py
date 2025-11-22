@@ -3,7 +3,7 @@ import subprocess
 import time
 import base64
 from hashlib import sha256
-from ecdsa import SECP256k1, SigningKey
+from ecdsa import SECP256k1, SigningKey, VerifyingKey
 from ecdsa.ellipticcurve import Point, PointJacobi
 
 def xor_strings(hex_str1, hex_str2):
@@ -26,7 +26,7 @@ mqtt_broker="192.168.100.100"
 mqtt_port="1883"
 mqtt_topic = "/auth"
 
-HOME_DIR="/home/raspi/mqtt_tasks/ieee_medical_mqtt/protocol/"
+HOME_DIR="/home/raspi/gateway/"
 CONFIG_DIR = f"{HOME_DIR}config/"
 
 
@@ -44,22 +44,19 @@ except Exception as e:
 idg = hello_idg.split(',')[1]
 
 
-SKg = SigningKey.generate(curve=SECP256k1)
+priv_hex = "1e99423a4ed27608a15a2616e0d1f1bb3f4cec9a1f3bf3a4d04b2d9f24d8a3c4"
+SKg = SigningKey.from_string(bytes.fromhex(priv_hex), curve=SECP256k1)
 PKg = SKg.get_verifying_key()
 
 Ng = int.from_bytes(os.urandom(32), byteorder='big')
 
 curve = SECP256k1
 P = curve.generator
-
-
-X1 = Ng * P
-X2 = Ng * PKg.pubkey.point
+X1 = Ng * PKg.pubkey.point
 
 X1_toSend = base64.b64encode(X1.to_bytes()).decode('utf-8')
-X2_toSend = base64.b64encode(X2.to_bytes()).decode('utf-8')
 
-m1 = f"{X1_toSend},{X2_toSend}"
+m1 = f"{X1_toSend}"
 print(f"\033[96m[+] Sending M1 : {{{m1}}}\033[0m")
 os.system(f"mosquitto_pub -h {mqtt_broker} -t {mqtt_topic} -p {mqtt_port} -m {m1} > /dev/null")
 
@@ -75,37 +72,38 @@ except Exception as e:
 	exit()
 
 m2 = m2.split(',')
-b64_x3 = m2[0]
+b64_x2 = m2[0]
+X2 = str_to_point(b64_x2)
 hex_x5 = m2[1]
 b64_x6= m2[2]
 
-_idi = (SKg.privkey.secret_multiplier * str_to_point(b64_x3))
-_idi = f"{_idi.x()}{_idi.y()}"
-_idi = base64.b64encode(sha256(_idi.encode('utf-8')).digest()).decode('utf-8')
-_idi = xor_strings(_idi.encode().hex(),hex_x5)
-idi = ''.join([chr(int(_idi[i:i+2], 16)) for i in range(0, len(_idi), 2)])
+X4 = SKg.privkey.secret_multiplier * X2
+hash_x4 = f"{X4.x()}{X4.y()}"
+hash_x4 = base64.b64encode(sha256(hash_x4.encode('utf-8')).digest()).decode('utf-8')
+idi = xor_strings(hash_x4.encode().hex(),hex_x5)
 
+# fetch PKi from DB based on IDi 
+PKi = VerifyingKey.from_string(bytes.fromhex("02ab4c91b6db2b4dc8ef5529fa546503a3c45fe19f6eb60f0129656e5966e0fe92"), curve=SECP256k1)
+X3 = SKg.privkey.secret_multiplier * Ng * PKi.pubkey.point
 # authenticate
-hash_value = f"{X1_toSend}{X2_toSend}{b64_x3}{idi}{idg}"
-hash_value = base64.b64encode(sha256(hash_value.encode('utf-8')).digest()).decode('utf-8')
+str_x3 = base64.b64encode(X3.to_bytes()).decode('utf-8')
+str_x4 = base64.b64encode(X4.to_bytes()).decode('utf-8')
+_t = f"{str_x3}{str_x4}{hex_x5}{idi}{idg}"
+hash_value = base64.b64encode(sha256(_t.encode('utf-8')).digest()).decode('utf-8')
 if b64_x6 == hash_value:
 	print("[+] Subscriber has been authenticated successfully.")
 else:
 	print("[-] Wrong Credentials!")
 	exit()
 
-
-X4 = SKg.privkey.secret_multiplier * str_to_point(b64_x3)
-hash_bitwise_x4 = f"{X4.x()}{X4.y()}"
-hash_bitwise_x4 = ~int(hash_bitwise_x4)
-
-SKig = base64.b64encode(sha256(str(hash_bitwise_x4).encode('utf-8')).digest()).decode('utf-8')
+_x3 = f"{X3.x()}{X3.y()}"
+_x4 = f"{X4.x()}{X4.y()}"
+SKig = base64.b64encode(sha256(f"{_x3}{_x4}".encode("utf-8")).digest()).decode('utf-8')
 
 print(f"\033[1m[+] Session Key: {SKig}\033[0m")
 
-_hash = f"{SKig}{m2[0]}{m2[1]}{m2[2]}"
-
-m3 = base64.b64encode(sha256(_hash.encode('utf-8')).digest()).decode('utf-8')
+X7 = f"{SKig}{b64_x2}{hex_x5}{b64_x6}"
+m3 = base64.b64encode(sha256(X7.encode('utf-8')).digest()).decode('utf-8')
 # send m3
 print(f"\033[96m[+] Sending M3 : {{{m3}}}\033[0m")
 os.system(f"mosquitto_pub -h {mqtt_broker} -t {mqtt_topic} -p {mqtt_port} -m {m3} > /dev/null")
